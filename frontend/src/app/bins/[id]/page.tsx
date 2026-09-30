@@ -10,7 +10,7 @@ import { getBin, updateBin, generateBinStl, getBinStlUrl, getBinZipUrl, getBinTh
 import { buildBinConfig, createPartialBinsValues, getDefaultBinConfig, resetDefaultBinConfig, saveDefaultBinConfig } from '@/lib/binDefaults'
 import { downloadExport } from '@/lib/download'
 import type { BinConfig, BinData, PlacedTool, TextLabel } from '@/types'
-import { Download, Loader2, Package, ChevronDown, Check, TriangleAlert } from 'lucide-react'
+import { Download, Loader2, Package, ChevronDown, ChevronLeft, Check, TriangleAlert } from 'lucide-react'
 import { Breadcrumb } from '@/components/Breadcrumb'
 import { Alert } from '@/components/Alert'
 import { useDebouncedSave } from '@/hooks/useDebouncedSave'
@@ -33,6 +33,35 @@ function InfoBanner({ children }: { children: React.ReactNode }) {
       {children}
     </div>
   )
+}
+
+// Sidebar chrome preferences. Stored ad-hoc rather than in lib/settings.ts,
+// which is a domain store round-tripped through the API.
+const SIDEBAR_WIDTH_KEY = 'tracefinity.binConfigurator.sidebarWidth'
+const SIDEBAR_HIDDEN_KEY = 'tracefinity.binConfigurator.sidebarHidden'
+const SIDEBAR_WIDTH_MIN = 200
+const SIDEBAR_WIDTH_MAX = 360
+const SIDEBAR_WIDTH_DEFAULT = 260
+
+function loadSidebarWidth(): number {
+  if (typeof window === 'undefined') return SIDEBAR_WIDTH_DEFAULT
+  try {
+    const raw = window.localStorage.getItem(SIDEBAR_WIDTH_KEY)
+    const parsed = raw ? Number(raw) : NaN
+    if (!Number.isFinite(parsed)) return SIDEBAR_WIDTH_DEFAULT
+    return Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, parsed))
+  } catch {
+    return SIDEBAR_WIDTH_DEFAULT
+  }
+}
+
+function loadSidebarHidden(): boolean {
+  if (typeof window === 'undefined') return false
+  try {
+    return window.localStorage.getItem(SIDEBAR_HIDDEN_KEY) === 'true'
+  } catch {
+    return false
+  }
 }
 
 export default function BinPage() {
@@ -72,6 +101,49 @@ export default function BinPage() {
   const [defaultsStatus, setDefaultsStatus] = useState<string | null>(null)
   const defaultsStatusTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const exportRef = useRef<HTMLDivElement>(null)
+
+  // Sidebar chrome is a view preference, so it follows the ad-hoc localStorage
+  // pattern used by the configurator's section collapse state.
+  const [sidebarWidth, setSidebarWidth] = useState(loadSidebarWidth)
+  const [sidebarHidden, setSidebarHiddenState] = useState(loadSidebarHidden)
+  const sidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
+
+  const setSidebarHidden = useCallback((hidden: boolean) => {
+    setSidebarHiddenState(hidden)
+    try {
+      window.localStorage.setItem(SIDEBAR_HIDDEN_KEY, String(hidden))
+    } catch {
+      // private mode / quota — hidden state just won't persist
+    }
+  }, [])
+
+  const startSidebarResize = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    sidebarResizeRef.current = { startX: e.clientX, startWidth: sidebarWidth }
+  }, [sidebarWidth])
+
+  const handleSidebarResize = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const start = sidebarResizeRef.current
+    if (!start) return
+    const next = Math.min(
+      SIDEBAR_WIDTH_MAX,
+      Math.max(SIDEBAR_WIDTH_MIN, start.startWidth + (e.clientX - start.startX)),
+    )
+    setSidebarWidth(next)
+  }, [])
+
+  const stopSidebarResize = useCallback(() => {
+    if (!sidebarResizeRef.current) return
+    sidebarResizeRef.current = null
+    setSidebarWidth((w) => {
+      try {
+        window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(w))
+      } catch {
+        // private mode / quota — width just won't persist
+      }
+      return w
+    })
+  }, [])
 
   const requiredGridSize = useMemo(() => {
     if (!autoSize || placedTools.length === 0) return null
@@ -431,26 +503,78 @@ export default function BinPage() {
   const effectiveRimUnits = config.stacking_lip ? config.rim_units : 0
   const hasExports = !gridLimitError && (stlUrl || zipUrl || threemfUrl || insertStlUrl)
 
+  // Bin identity and save state live in a top bar rather than inside the
+  // sidebar, so they stay visible when the user collapses the sidebar.
+  const header = (
+    <div className="flex items-center gap-2 min-w-0">
+      <Breadcrumb segments={[
+        { label: projectSource.rootLabel, href: projectSource.rootHref },
+        { label: name || 'Untitled', editable: true, onEdit: (v) => setName(v) },
+      ]} />
+      {saving && <Loader2 className="w-3 h-3 animate-spin text-text-muted flex-shrink-0" />}
+      {saved && !saveError && <Check className="w-3 h-3 text-green-400 flex-shrink-0" />}
+      {saveError && !saving && (
+        <TriangleAlert
+          className="w-3 h-3 text-red-400 flex-shrink-0"
+          aria-label="Changes not saved"
+        />
+      )}
+    </div>
+  )
+
   return (
-    <div className="h-[calc(100vh-44px)] flex">
-      {/* config sidebar - always open */}
-      <div className="w-[200px] flex-shrink-0 bg-surface border-r border-border flex flex-col">
+    <div className="h-[calc(100vh-44px)] flex flex-col">
+      <div className="flex-shrink-0 bg-surface border-b border-border px-3 py-2 flex items-center gap-2">
+        {!sidebarHidden && (
+          <button
+            type="button"
+            onClick={() => setSidebarHidden(true)}
+            title="Hide configuration sidebar"
+            aria-label="Hide configuration sidebar"
+            className="glass-sm rounded-[7px] p-1 text-text-secondary hover:bg-glass-hover transition-colors cursor-pointer flex-shrink-0"
+          >
+            <ChevronLeft className="w-3.5 h-3.5" />
+          </button>
+        )}
+        {header}
+        {sidebarHidden && (
+          <button
+            type="button"
+            onClick={() => setSidebarHidden(false)}
+            title="Show configuration sidebar"
+            aria-label="Show configuration sidebar"
+            className="glass-sm rounded-[7px] px-2 py-1 text-[11px] text-text-secondary hover:bg-glass-hover transition-colors cursor-pointer flex-shrink-0 flex items-center gap-1"
+          >
+            <ChevronDown className="w-3 h-3 rotate-90" />
+            Config
+          </button>
+        )}
+      </div>
+
+      <div className="flex-1 min-h-0 flex">
+      {/* config sidebar */}
+      {sidebarHidden ? (
+        <div className="flex-shrink-0" />
+      ) : (
+        <div
+          className="flex-shrink-0 bg-surface border-r border-border flex flex-col relative"
+          style={{ width: sidebarWidth }}
+        >
+        <div
+          onPointerDown={startSidebarResize}
+          onPointerMove={handleSidebarResize}
+          onPointerUp={stopSidebarResize}
+          onPointerCancel={stopSidebarResize}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize configuration sidebar"
+          aria-valuenow={sidebarWidth}
+          aria-valuemin={SIDEBAR_WIDTH_MIN}
+          aria-valuemax={SIDEBAR_WIDTH_MAX}
+          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize z-20 hover:bg-accent/30 transition-colors"
+        />
         <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin p-3 space-y-3">
           <div className="glass rounded-[10px] px-3 py-3">
-            <div className="flex items-center gap-2 mb-3">
-              <Breadcrumb segments={[
-                { label: projectSource.rootLabel, href: projectSource.rootHref },
-                { label: name || 'Untitled', editable: true, onEdit: (v) => setName(v) },
-              ]} />
-              {saving && <Loader2 className="w-3 h-3 animate-spin text-text-muted flex-shrink-0" />}
-              {saved && !saveError && <Check className="w-3 h-3 text-green-400 flex-shrink-0" />}
-              {saveError && !saving && (
-                <TriangleAlert
-                  className="w-3 h-3 text-red-400 flex-shrink-0"
-                  aria-label="Changes not saved"
-                />
-              )}
-            </div>
             {saveError && (
               <div role="alert" className="mb-3 rounded-[8px] border border-red-800 bg-red-900/20 px-2 py-1.5 text-[11px] text-red-300">
                 Changes are not being saved. Recent edits to this bin will be lost if you leave the page.
@@ -554,7 +678,8 @@ export default function BinPage() {
             </div>
           )}
         </div>
-      </div>
+        </div>
+      )}
 
       {/* right of sidebar: library on top, then canvas + 3D preview below */}
       <div className="flex-1 min-w-0 flex flex-col">
@@ -586,7 +711,7 @@ export default function BinPage() {
                 partialBinsValues={config.partial_bins_values}
                 wallThickness={config.wall_thickness}
                 defaultCutoutDepth={config.cutout_depth}
-                maxCutoutDepth={calcMaxCutoutDepth(config.height_units, config.stacking_lip, config.shelled)}
+                maxCutoutDepth={calcMaxCutoutDepth(config.height_units, config.stacking_lip, config.shelled, config.flat_bottom)}
                 halfGridBase={config.half_grid_base}
                 onEditTool={(toolId) => router.push(projectSource.scopedHref(`/tools/${toolId}`))}
                 smoothedToolIds={smoothedToolIds}
@@ -649,6 +774,7 @@ export default function BinPage() {
             </div>
           </div>
         </div>
+      </div>
       </div>
     </div>
   )

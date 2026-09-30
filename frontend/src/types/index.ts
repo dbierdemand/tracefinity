@@ -149,6 +149,7 @@ export interface BinDefaults {
   insert_height: number
   insert_clearance: number
   half_grid_base: boolean
+  flat_bottom: boolean
   partial_bins: boolean
   partial_bins_values: boolean[]
   partial_bins_connect: boolean

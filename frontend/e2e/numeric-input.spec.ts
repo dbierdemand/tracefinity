@@ -23,9 +23,18 @@ test.describe('numeric input deferred validation', () => {
     await page.close()
   })
 
+  // The configurator's Clearance slider lives in the collapsible "Cutouts"
+  // section, which starts folded for a new bin. Open it before querying.
+  async function expandCutouts() {
+    const header = page.getByRole('button', { name: /Cutouts/i }).first()
+    await header.click()
+    await expect(header).toHaveAttribute('aria-expanded', 'true')
+  }
+
   test('allows free typing without mid-keystroke clamping', async () => {
     await page.goto(`/bins/${binId}`)
     await page.waitForLoadState('networkidle')
+    await expandCutouts()
 
     // use the Cutout Clearance input (min=0, max=5, step=0.1) -- always enabled
     const clearanceInput = page.locator('input[type="number"][min="0"][max="5"][step="0.1"]').first()
@@ -43,6 +52,7 @@ test.describe('numeric input deferred validation', () => {
   test('clamps value on blur when out of range', async () => {
     await page.goto(`/bins/${binId}`)
     await page.waitForLoadState('networkidle')
+    await expandCutouts()
 
     // use the cutout clearance input (min=0, max=5, step=0.1)
     const clearanceInput = page.locator('input[type="number"][min="0"][max="5"][step="0.1"]').first()
@@ -64,6 +74,7 @@ test.describe('numeric input deferred validation', () => {
   test('clamps value on Enter when out of range', async () => {
     await page.goto(`/bins/${binId}`)
     await page.waitForLoadState('networkidle')
+    await expandCutouts()
 
     const clearanceInput = page.locator('input[type="number"][min="0"][max="5"][step="0.1"]').first()
     await expect(clearanceInput).toBeVisible({ timeout: 10_000 })
@@ -80,6 +91,7 @@ test.describe('numeric input deferred validation', () => {
   test('reverts to previous value on empty blur', async () => {
     await page.goto(`/bins/${binId}`)
     await page.waitForLoadState('networkidle')
+    await expandCutouts()
 
     // use the Cutout Clearance input (always enabled)
     const clearanceInput = page.locator('input[type="number"][min="0"][max="5"][step="0.1"]').first()

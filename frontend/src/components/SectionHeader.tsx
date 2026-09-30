@@ -3,8 +3,9 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { ArrowUpDown, ChevronDown, ChevronRight, Search } from 'lucide-react'
+import { cn } from '@/lib/utils'
 
-export function SectionHeader({ title, count, search, onSearchChange, sortKey, onSortChange, collapsed, onToggleCollapsed, children }: {
+export function SectionHeader({ title, count, search, onSearchChange, sortKey, onSortChange, collapsed, onToggleCollapsed, dense, children }: {
   title: string
   count?: number
   search?: string
@@ -13,6 +14,8 @@ export function SectionHeader({ title, count, search, onSearchChange, sortKey, o
   onSortChange?: (v: string) => void
   collapsed?: boolean
   onToggleCollapsed?: () => void
+  /** Tighter row for dense sidebars (e.g. the bin configurator) that stack many sections. */
+  dense?: boolean
   children?: ReactNode
 }) {
   const [searchOpen, setSearchOpen] = useState(false)
@@ -23,7 +26,10 @@ export function SectionHeader({ title, count, search, onSearchChange, sortKey, o
   }, [searchOpen])
 
   return (
-    <div className="flex h-[32px] items-center justify-between mb-3 gap-2">
+    <div className={cn(
+      'flex items-center justify-between gap-2',
+      dense ? 'h-[22px] mb-1' : 'h-[32px] mb-3',
+    )}>
       {onToggleCollapsed ? (
         <button
           onClick={onToggleCollapsed}
