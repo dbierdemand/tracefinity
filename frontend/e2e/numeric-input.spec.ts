@@ -24,10 +24,15 @@ test.describe('numeric input deferred validation', () => {
   })
 
   // The configurator's Clearance slider lives in the collapsible "Cutouts"
-  // section, which starts folded for a new bin. Open it before querying.
+  // section. Collapse state is persisted in localStorage and shared across
+  // tests in this file (same page/context), so the section can arrive either
+  // open or folded. Only click when it is actually folded, otherwise the click
+  // would collapse it and flip aria-expanded to "false".
   async function expandCutouts() {
     const header = page.getByRole('button', { name: /Cutouts/i }).first()
-    await header.click()
+    if ((await header.getAttribute('aria-expanded')) !== 'true') {
+      await header.click()
+    }
     await expect(header).toHaveAttribute('aria-expanded', 'true')
   }
 
