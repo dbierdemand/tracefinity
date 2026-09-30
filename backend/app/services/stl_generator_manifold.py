@@ -45,6 +45,8 @@ SHELL_TRENCH_PLATE_T = 0.75  # default floor plate thickness above the base feet
 
 MIN_CUTOUT_DEPTH = 1.5  # pocket depth floor; slider gains 7mm per height unit
 
+MIN_FLAT_FLOOR_DEPTH = 2.0  # solid floor left under a pocket / shell cavity on a flat-bottomed bin
+
 
 # ── geometry helpers ─────────────────────────────────────────────────────────
 
@@ -111,6 +113,75 @@ def _build_base_unit(outer_w: float, outer_h: float):
     ).translate((0.0, 0.0, BASE_H_BOT + BASE_H_MID))
 
     return mf.Manifold.batch_boolean([l0, l1, l2], mf.OpType.Add)
+
+
+FLAT_BOTTOM_CHAMFER = 0.7  # 45° chamfer on the bottom edge of a flat-bottomed bin
+
+
+def _build_flat_body(outer_w: float, outer_h: float, height: float, r: float):
+    """Flat-bottomed bin body: a straight wall with a chamfered bottom edge.
+
+    Unlike a standard bin there are no feet and no base cells — the walls
+    run the full height of the bin from a flat underside. The bottom edge
+    carries a 45° chamfer (FLAT_BOTTOM_CHAMFER, equal rise and run) so the
+    print does not begin as a full-footprint raft: it helps the first layers
+    adhere to the bed and knocks the sharp arris off a surface the bin is
+    pressed down onto.
+
+    z=0 is the chamfer's small end: the bottom face is inset by the chamfer
+    on every side, and the chamfer opens out to the full outer footprint at
+    z=FLAT_BOTTOM_CHAMFER, where the straight wall continues to `height`.
+    """
+    import manifold3d as mf
+
+    c = FLAT_BOTTOM_CHAMFER
+    bot_w = outer_w - 2 * c
+    bot_h = outer_h - 2 * c
+    if bot_w <= 0 or bot_h <= 0:
+        # too small to chamfer: fall back to a plain straight wall
+        cs = _cs(_rounded_rect_pts(outer_w, outer_h, r))
+        return mf.Manifold.extrude(cs, height)
+
+    # chamfer z=0→c: bot_w→outer_w (45°, equal rise and run)
+    cs_bot = _cs(_rounded_rect_pts(bot_w, bot_h, r))
+    chamfer = mf.Manifold.extrude(
+        cs_bot, c, scale_top=(outer_w / bot_w, outer_h / bot_h)
+    )
+    # straight wall z=c→height at the full footprint
+    cs_outer = _cs(_rounded_rect_pts(outer_w, outer_h, r))
+    straight = mf.Manifold.extrude(cs_outer, height - c).translate((0.0, 0.0, c))
+    return mf.Manifold.batch_boolean([chamfer, straight], mf.OpType.Add)
+
+
+def _make_flat_chamfer_cutter(outer_w: float, outer_h: float):
+    """Wedge that chamfers the bottom outer edge of a flat-bottomed bin.
+
+    Used for the shelled body, whose walls are built as separate parts (a
+    floor plate inset 0.2mm plus a thin outer band) and so cannot take the
+    chamfer as part of a single extrusion. The solid body gets the same
+    chamfer directly from _build_flat_body.
+
+    The cutter is the z=0..FLAT_BOTTOM_CHAMFER slab of the outer footprint
+    minus the 45° frustum that runs from (outer - 2c) at z=0 out to the full
+    outer footprint at z=c, leaving exactly the wedge at the bottom edge.
+    Subtracting it leaves the same 45° surface the solid path produces.
+    """
+    import manifold3d as mf
+
+    c = FLAT_BOTTOM_CHAMFER
+    bot_w = outer_w - 2 * c
+    bot_h = outer_h - 2 * c
+    if bot_w <= 0 or bot_h <= 0:
+        return None
+
+    cs_outer = _cs(_rounded_rect_pts(outer_w, outer_h, GF_CORNER_R))
+    cs_bot = _cs(_rounded_rect_pts(bot_w, bot_h, GF_CORNER_R))
+    slab = mf.Manifold.extrude(cs_outer, c)
+    keep = mf.Manifold.extrude(
+        cs_bot, c, scale_top=(outer_w / bot_w, outer_h / bot_h)
+    )
+    wedge = slab - keep
+    return wedge if not wedge.is_empty() else None
 
 
 def _build_stacking_lip_notch(outer_w: float, outer_h: float, wall_inset: float = LIP_D0 + LIP_D2):
@@ -290,6 +361,29 @@ def _shell_exterior_wall(config) -> bool:
     return bool(getattr(config, "shell_exterior_wall", True))
 
 
+def _flat_bottom(config) -> bool:
+    """Whether the bin replaces the gridfinity feet with a flat underside.
+
+    The footprint (grid_x/grid_y and the 42mm grid pitch) is unchanged, so
+    the bin still occupies exactly the cells it claims; only the underside
+    changes. A flat-bottomed bin has no baseplate interface, so magnets,
+    half-grid base cells and the between-feet grooves have nothing to
+    engage and are suppressed by the schema/geometry.
+    """
+    return bool(getattr(config, "flat_bottom", False))
+
+
+def _base_top_z(config) -> float:
+    """Top of the solid material the bin interior is cut out of.
+
+    Standard bins: the top of the 4.75mm gridfinity feet, which the wall
+    body sits on. Flat-bottomed bins: z=0, because the walls run the full
+    height of the bin from the flat underside, so the 4.75mm the feet would
+    have occupied becomes usable interior depth.
+    """
+    return 0.0 if _flat_bottom(config) else GF_BASE_HEIGHT
+
+
 def _build_shell(config: GenerateRequest):
     """Solid bin shell: base units + wall body to wall_top_z.
 
@@ -315,16 +409,26 @@ def _build_shell(config: GenerateRequest):
     x_cells = _base_cell_layout(grid_x, cell_size)
     y_cells = _base_cell_layout(grid_y, cell_size)
 
-    base_units = []
-    for cy, ch in y_cells:
-        for cx, cw in x_cells:
-            unit = _build_base_unit(cw - 0.5, ch - 0.5)
-            base_units.append(unit.translate((cx, cy, 0.0)))
-
     cs_wall = _cs(_rounded_rect_pts(outer_w, outer_h, r))
-    wall_body = mf.Manifold.extrude(cs_wall, height - GF_BASE_HEIGHT).translate(
-        (0.0, 0.0, GF_BASE_HEIGHT)
-    )
+    base_top = _base_top_z(config)
+    # On a flat bottom the wall body starts at z=0 and already fills the
+    # whole footprint, so per-cell base slabs would be entirely inside it
+    # and only cost boolean time. Standard bins keep their feet.
+    base_units = []
+    if not _flat_bottom(config):
+        for cy, ch in y_cells:
+            for cx, cw in x_cells:
+                unit = _build_base_unit(cw - 0.5, ch - 0.5)
+                base_units.append(unit.translate((cx, cy, 0.0)))
+
+    if _flat_bottom(config):
+        # no feet: a single straight wall from a flat underside, with the
+        # 45° chamfer along its bottom edge
+        wall_body = _build_flat_body(outer_w, outer_h, height, r)
+    else:
+        wall_body = mf.Manifold.extrude(cs_wall, height - base_top).translate(
+            (0.0, 0.0, base_top)
+        )
 
     parts = base_units + [wall_body]
     return mf.Manifold.batch_boolean(parts, mf.OpType.Add)
@@ -360,6 +464,12 @@ def _build_shelled_base(config: GenerateRequest):
     half_grid = getattr(config, "half_grid_base", False)
     cell_size = GF_HALF_GRID if half_grid else GF_GRID
     grid_x, grid_y = config.grid_x, config.grid_y
+
+    # A flat-bottomed bin has no feet: the shell walls run the full height
+    # of the bin from z=0, so there are no base cells to lay down and the
+    # trench floor plate sits directly on the underside.
+    if _flat_bottom(config):
+        return []
 
     cells = []
     for cy, ch in _base_cell_layout(grid_y, cell_size):
@@ -404,7 +514,7 @@ def _build_shelled_bin(
     from shapely.validation import make_valid
 
     t = _effective_wall_thickness(config)
-    trench_floor_z = GF_BASE_HEIGHT
+    trench_floor_z = _base_top_z(config)
     plate_t = _shell_floor_plate_t(config)
     cavity_top_z = _shell_cavity_top_z(config, wall_top_z)
     outer_w = config.grid_x * GF_GRID - 0.5
@@ -426,21 +536,25 @@ def _build_shelled_bin(
     parts: list = []
     parts.extend(_build_shelled_base(config))
 
-    # trench floor plate: a thin plate sitting ON TOP of the base cells seals
-    # the gaps between the tool walls, the outer band and the base cells,
-    # while the grooves between the feet stay open below it so the flare
-    # chamfer between the feet remains standard.
+    # trench floor plate: a thin plate sealing the bottom. On a standard base
+    # it sits ON TOP of the base cells, so the grooves between the feet stay
+    # open below it and the flare chamfer between the feet remains standard.
+    # On a flat bottom there are no feet, so the plate is the floor itself
+    # and sits at the underside of the bin.
     # The plate overlaps the cells below and is overlapped by the rings/slabs
     # above by 0.01mm so no boolean faces are coplanar (coincident faces
     # break the union); it is inset 0.1mm from the outer footprint so its
     # side faces stay strictly inside the wall band material.
     plate_w = outer_w - 0.2
     plate_h = outer_h - 0.2
+    # a flat bottom must not start below z=0 (that would leave an open face
+    # on the underside), so the 0.01mm overlap is dropped there
+    plate_overlap = 0.0 if _flat_bottom(config) else 0.01
     parts.append(
         mf.Manifold.extrude(
             _cs(_rounded_rect_pts(plate_w, plate_h, GF_CORNER_R)),
-            plate_t + 0.01,
-        ).translate((0.0, 0.0, trench_floor_z - 0.01))
+            plate_t + plate_overlap,
+        ).translate((0.0, 0.0, trench_floor_z - plate_overlap))
     )
 
     # outer wall band. with a stacking lip the band widens to the spec lip
@@ -555,6 +669,17 @@ def _build_shelled_bin(
     if body.is_empty():
         logger.warning("shell: shelled body came out empty; falling back to solid")
         return None
+
+    # A flat-bottomed shelled bin gets the same 45° bottom-edge chamfer as
+    # the solid flat body. The shelled walls are assembled from separate
+    # parts, so the chamfer is cut as a wedge rather than built in.
+    if _flat_bottom(config):
+        wedge = _make_flat_chamfer_cutter(outer_w, outer_h)
+        if wedge is not None:
+            body = body - wedge
+            if body.is_empty():
+                logger.warning("shell: flat chamfer removed the whole body; skipping chamfer")
+                return None
     return body
 
 
@@ -647,7 +772,8 @@ def _make_connect_mode_cell_cutters(config: GenerateRequest, top_z: float):
     import manifold3d as mf
 
     cutters = []
-    cut_height = top_z - GF_BASE_HEIGHT + 0.2
+    cut_height = top_z - _base_top_z(config) + 0.2
+    base_top = _base_top_z(config)
     retain_wall = _partial_bins_retain_wall(config)
     bin_hw = (config.grid_x * GF_GRID - 0.5) / 2.0
     bin_hh = (config.grid_y * GF_GRID - 0.5) / 2.0
@@ -677,12 +803,12 @@ def _make_connect_mode_cell_cutters(config: GenerateRequest, top_z: float):
                 ccx, ccy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
                 cs = _cs(_sharp_rect_pts(w, h))
                 cutters.append(
-                    mf.Manifold.extrude(cs, cut_height).translate((ccx, ccy, GF_BASE_HEIGHT - 0.1))
+                    mf.Manifold.extrude(cs, cut_height).translate((ccx, ccy, base_top - 0.1))
                 )
             else:
                 cs = _cs(_sharp_rect_pts(GF_GRID, GF_GRID))
                 cutters.append(
-                    mf.Manifold.extrude(cs, cut_height).translate((cx, cy, GF_BASE_HEIGHT - 0.1))
+                    mf.Manifold.extrude(cs, cut_height).translate((cx, cy, base_top - 0.1))
                 )
 
     if not cutters:
@@ -696,6 +822,7 @@ def _make_connect_mode_stability_plates(config: GenerateRequest):
 
     plates = []
     overlap = GF_GRID / 2.0
+    base_top = _base_top_z(config)
     outer_w = config.grid_x * GF_GRID - 0.5
     outer_h = config.grid_y * GF_GRID - 0.5
     bin_hw = outer_w / 2.0
@@ -733,7 +860,7 @@ def _make_connect_mode_stability_plates(config: GenerateRequest):
         plates.append(
             mf.Manifold.extrude(
                 _cs(_rounded_rect_pts(w, h, corner_r)), PARTIAL_BIN_CONNECT_PLATE_MM
-            ).translate((ccx, ccy, GF_BASE_HEIGHT))
+            ).translate((ccx, ccy, base_top))
         )
 
     if not plates:
@@ -841,8 +968,18 @@ def _max_pocket_depth(config, wall_top_z: float) -> float:
     collar is perimeter-only geometry above the cavity top and never bounds
     the pocket cutter, whose top surface exits through open air inside the
     collar. The result is clamped so the slider always has a legal range.
+
+    A flat-bottomed bin has no feet, so the full wall height is available to
+    the pocket and the range is bounded by the physical limit instead: the
+    whole wall height less MIN_FLAT_FLOOR_DEPTH of solid floor. That is
+    deeper than the nominal height-relative range a standard bin is given,
+    which is how the 4.75mm the feet occupied becomes usable depth. Solid
+    flat-bottomed bins still deduct the stacking-lip notch.
     """
-    depth = MIN_CUTOUT_DEPTH + GF_HEIGHT_UNIT * (config.height_units - 1)
+    if _flat_bottom(config):
+        depth = wall_top_z - MIN_FLAT_FLOOR_DEPTH
+    else:
+        depth = MIN_CUTOUT_DEPTH + GF_HEIGHT_UNIT * (config.height_units - 1)
     if not _is_shelled(config) and config.stacking_lip:
         depth -= LIP_D3 + LIP_D4
     return max(MIN_CUTOUT_DEPTH, depth)
@@ -934,7 +1071,9 @@ def _make_magnet_holes(config: GenerateRequest):
     """
     import manifold3d as mf
 
-    if getattr(config, "half_grid_base", False):
+    # magnet holes seat into the gridfinity feet; a flat-bottomed bin has no
+    # feet and therefore no baseplate to lock to
+    if getattr(config, "half_grid_base", False) or _flat_bottom(config):
         return mf.Manifold()
 
     diameter = getattr(config, "magnet_diameter", MAGNET_DIAMETER)
@@ -1764,7 +1903,7 @@ class ManifoldSTLGenerator:
         # subtract them in one pass to avoid sequential z-plane imprecision
         cutters: list = []
 
-        if config.magnets and not config.half_grid_base:
+        if config.magnets and not config.half_grid_base and not _flat_bottom(config):
             cutters.append(_make_magnet_holes(config))
 
         pocket_depth = 5
@@ -1813,7 +1952,7 @@ class ManifoldSTLGenerator:
             # pocket slab top in both modes.
             shell_floor_z = None
             if _is_shelled(config):
-                shell_floor_z = GF_BASE_HEIGHT + _shell_floor_plate_t(config)
+                shell_floor_z = _base_top_z(config) + _shell_floor_plate_t(config)
             recessed, embossed = _make_text_labels(
                 config,
                 wall_top_z,

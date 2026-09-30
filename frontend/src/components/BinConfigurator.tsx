@@ -1,8 +1,10 @@
 'use client'
 
-import { Info } from 'lucide-react'
+import { useState } from 'react'
+import { ChevronRight, Info } from 'lucide-react'
 import type { BinConfig } from '@/types'
 import { NumericInput } from '@/components/NumericInput'
+import { SectionHeader } from '@/components/SectionHeader'
 import { createPartialBinsValues } from '@/lib/binDefaults'
 import { maxGridUnitsForOtherAxis } from '@/lib/constants'
 import { BED_SIZE_MAX_MM, BED_SIZE_MIN_MM } from '@/lib/settings'
@@ -17,6 +19,8 @@ const LIP_NOTCH_DEPTH = 3.8
 const MIN_CUTOUT_DEPTH = 1.5
 // solid base height below the open shell interior
 const GF_BASE_HEIGHT = 4.75
+// minimum solid floor left under a flat-bottomed bin's pockets / shell cavity
+const MIN_FLAT_FLOOR_DEPTH = 2.0
 // floor plate thickness bounds (shelled mode)
 const MIN_FLOOR_PLATE = 0.4
 // Shell Depth slider snaps in 0.5mm increments
@@ -26,22 +30,34 @@ export function calcMaxCutoutDepth(
   heightUnits: number,
   stackingLip: boolean,
   shelled: boolean = false,
+  flatBottom: boolean = false,
 ): number {
   // shell mode has no lip-notch deduction: the lip collar is perimeter-only
   // geometry and never bounds the pocket depth (mirrors _max_pocket_depth)
   const lipDeduction = stackingLip && !shelled ? LIP_NOTCH_DEPTH : 0
-  const depth = MIN_CUTOUT_DEPTH + GF_HEIGHT_UNIT * (heightUnits - 1) - lipDeduction
+  // a flat bottom has no feet, so the whole wall height is available and the
+  // range is bounded by the physical limit: wall height less MIN_FLAT_FLOOR_DEPTH
+  let depth = flatBottom
+    ? GF_HEIGHT_UNIT * heightUnits - MIN_FLAT_FLOOR_DEPTH
+    : MIN_CUTOUT_DEPTH + GF_HEIGHT_UNIT * (heightUnits - 1)
+  depth -= lipDeduction
   return Math.max(MIN_CUTOUT_DEPTH, depth)
+}
+
+// Height of the solid material the interior is cut out of: the feet on a
+// standard bin, nothing at all on a flat-bottomed bin.
+function baseHeight(flatBottom: boolean): number {
+  return flatBottom ? 0 : GF_BASE_HEIGHT
 }
 
 // Shell Depth is the complement of the floor plate thickness: the open
 // cavity below the wall top. plate = wall_top - base_height - shell_depth.
-function shellDepthToPlate(depth: number, heightUnits: number): number {
-  return GF_HEIGHT_UNIT * heightUnits - GF_BASE_HEIGHT - depth
+function shellDepthToPlate(depth: number, heightUnits: number, flatBottom = false): number {
+  return GF_HEIGHT_UNIT * heightUnits - baseHeight(flatBottom) - depth
 }
 
-function plateToShellDepth(plate: number, heightUnits: number): number {
-  return GF_HEIGHT_UNIT * heightUnits - GF_BASE_HEIGHT - plate
+function plateToShellDepth(plate: number, heightUnits: number, flatBottom = false): number {
+  return GF_HEIGHT_UNIT * heightUnits - baseHeight(flatBottom) - plate
 }
 
 interface Props {
@@ -187,17 +203,128 @@ function HintBanner({ children }: { children: React.ReactNode }) {
   )
 }
 
+// --- Collapsible sections -------------------------------------------------
+// Collapse state is a pure view concern, so it follows the ad-hoc localStorage
+// pattern already used by the home and project pages rather than living in
+// lib/settings.ts (that store is a domain store round-tripped through the API).
+
+const SECTIONS = ['size', 'cutouts', 'base', 'features', 'partial', 'print'] as const
+type SectionId = (typeof SECTIONS)[number]
+
+const SECTION_COLLAPSE_KEY = 'tracefinity.binConfigurator.collapsedSections'
+
+// Only the everyday controls start open. Features, partial bins and print stay
+// folded so a new bin opens on a short, scannable sidebar.
+const DEFAULT_COLLAPSED: Record<SectionId, boolean> = {
+  size: false,
+  cutouts: false,
+  base: false,
+  features: true,
+  partial: true,
+  print: true,
+}
+
+function loadCollapsedSections(): Record<SectionId, boolean> {
+  if (typeof window === 'undefined') return DEFAULT_COLLAPSED
+  try {
+    const raw = window.localStorage.getItem(SECTION_COLLAPSE_KEY)
+    if (!raw) return DEFAULT_COLLAPSED
+    const parsed = JSON.parse(raw) as Partial<Record<SectionId, boolean>>
+    // merge over the defaults so newly added sections get a sane initial state
+    return { ...DEFAULT_COLLAPSED, ...parsed }
+  } catch {
+    return DEFAULT_COLLAPSED
+  }
+}
+
+function ConfigSection({
+  id,
+  title,
+  collapsed,
+  onToggle,
+  summary,
+  children,
+}: {
+  id: SectionId
+  title: string
+  collapsed: boolean
+  onToggle: () => void
+  /** Rendered in the header when folded, so hidden state stays legible. */
+  summary?: string
+  children: React.ReactNode
+}) {
+  return (
+    <section className="border-t border-border mt-2 pt-1.5 first:border-t-0 first:mt-0 first:pt-0">
+      <SectionHeader
+        title={title}
+        dense
+        collapsed={collapsed}
+        onToggleCollapsed={onToggle}
+      >
+        {summary && !collapsed && (
+          <span className="text-[10px] text-text-muted truncate" title={summary}>
+            {summary}
+          </span>
+        )}
+      </SectionHeader>
+      {!collapsed && <div className="space-y-0 pb-1">{children}</div>}
+    </section>
+  )
+}
+
+/**
+ * Collapsible wrapper for a sub-group nested under a master toggle. The toggle
+ * itself always stays visible; only the children fold away, behind a one-line
+ * summary of the current values.
+ */
+function SubGroup({ summary, children }: { summary: string; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="pl-3 border-l border-border-subtle ml-1">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-1 py-1.5 text-left cursor-pointer group"
+      >
+        <ChevronRight className={cn(
+          'w-3 h-3 flex-shrink-0 text-text-muted transition-transform',
+          open && 'rotate-90',
+        )} />
+        <span className="text-[10px] text-text-muted group-hover:text-text-secondary truncate transition-colors">
+          {summary}
+        </span>
+      </button>
+      {open && <div className="space-y-0 pb-1">{children}</div>}
+    </div>
+  )
+}
+
 export function BinConfigurator({ config, onChange, autoSize, onAutoSizeChange }: Props) {
+  const [collapsedSections, setCollapsedSections] = useState(loadCollapsedSections)
+
+  function toggleSection(id: SectionId) {
+    setCollapsedSections((prev) => {
+      const next = { ...prev, [id]: !prev[id] }
+      try {
+        window.localStorage.setItem(SECTION_COLLAPSE_KEY, JSON.stringify(next))
+      } catch {
+        // private mode / quota — collapse state just won't persist
+      }
+      return next
+    })
+  }
+
   function update(partial: Partial<BinConfig>) {
     onChange({ ...config, ...partial })
   }
 
-  const maxCutoutDepth = calcMaxCutoutDepth(config.height_units, config.stacking_lip, config.shelled)
+  const maxCutoutDepth = calcMaxCutoutDepth(config.height_units, config.stacking_lip, config.shelled, config.flat_bottom)
   // shell depth uses the same range rule as cutout depth: min 1.5mm, max
   // 1.5 + 7 × (height − 1) minus the lip notch when the stacking lip is on
   const shellDepthMin = MIN_CUTOUT_DEPTH
   const shellDepthMax = maxCutoutDepth
-  const shellDepth = plateToShellDepth(config.shell_floor_plate, config.height_units)
+  const shellDepth = plateToShellDepth(config.shell_floor_plate, config.height_units, config.flat_bottom)
   const binWidth = config.grid_x * 42
   const binDepth = config.grid_y * 42
   const needsSplit = config.bed_size > 0 && (binWidth > config.bed_size || binDepth > config.bed_size)
@@ -205,17 +332,31 @@ export function BinConfigurator({ config, onChange, autoSize, onAutoSizeChange }
 
   return (
     <div className="space-y-0">
-      {onAutoSizeChange && (
-        <Toggle
-          label="Auto-size grid"
-          help="Automatically fit grid to placed tools. Turn off to set grid size manually."
-          checked={!!autoSize}
-          onChange={onAutoSizeChange}
-        />
-      )}
+      <ConfigSection
+        id="size"
+        title="Size"
+        collapsed={collapsedSections.size}
+        onToggle={() => toggleSection('size')}
+        summary={`${config.grid_x} x ${config.grid_y} u · ${config.height_units}u tall`}
+      >
+        {onAutoSizeChange && (
+          <Toggle
+            label="Auto-size grid"
+            help="Automatically fit grid to placed tools. Turn off to set grid size manually."
+            checked={!!autoSize}
+            onChange={onAutoSizeChange}
+          />
+        )}
 
-      <SliderRow
-        label="Grid Width"
+        <Toggle
+          checked={config.half_grid_base}
+          onChange={(v) => update({ half_grid_base: v, ...(v ? { magnets: false } : {}) })}
+          label="Half-grid base"
+          help="Use 21mm half-grid cells instead of standard 42mm for finer positioning. Auto-size snaps to these smaller cells, so the width and depth below grow in half steps. Works with a flat bottom too, where it still controls grid layout and snapping."
+        />
+
+        <SliderRow
+          label="Grid Width"
         help="Bin width in gridfinity units (42mm each). Half-unit increments (21mm) supported."
         value={config.grid_x}
         min={1}
@@ -250,25 +391,37 @@ export function BinConfigurator({ config, onChange, autoSize, onAutoSizeChange }
 
       <SliderRow
         label="Height"
-        help="Bin height in gridfinity units. Each unit is 7mm, plus a 4.75mm base."
+        help={
+          config.flat_bottom
+            ? "Bin height in gridfinity units. Each unit is 7mm, measured from the flat bottom."
+            : "Bin height in gridfinity units. Each unit is 7mm, plus a 4.75mm base."
+        }
         value={config.height_units}
         min={1}
         max={20}
         unit="u"
         onChange={(v) => {
-          const newMax = calcMaxCutoutDepth(v, config.stacking_lip, config.shelled)
-          const depth = Math.min(Math.max(plateToShellDepth(config.shell_floor_plate, v), MIN_CUTOUT_DEPTH), newMax)
+          const newMax = calcMaxCutoutDepth(v, config.stacking_lip, config.shelled, config.flat_bottom)
+          const depth = Math.min(Math.max(plateToShellDepth(config.shell_floor_plate, v, config.flat_bottom), MIN_CUTOUT_DEPTH), newMax)
           update({
             height_units: v,
             cutout_depth: Math.min(config.cutout_depth, newMax),
-            shell_floor_plate: shellDepthToPlate(depth, v),
+            shell_floor_plate: shellDepthToPlate(depth, v, config.flat_bottom),
           })
         }}
       />
+      </ConfigSection>
 
-      <SliderRow
+      <ConfigSection
+        id="cutouts"
+        title="Cutouts"
+        collapsed={collapsedSections.cutouts}
+        onToggle={() => toggleSection('cutouts')}
+        summary={`${Math.min(config.cutout_depth, maxCutoutDepth).toFixed(1)}mm deep`}
+      >
+        <SliderRow
         label="Cutout Depth"
-        help={`How deep the tool pocket is cut into the bin. Range ${MIN_CUTOUT_DEPTH.toFixed(1)}–${maxCutoutDepth.toFixed(1)}mm at ${config.height_units}u height${config.stacking_lip && !config.shelled ? ' (with stacking lip)' : ''}.`}
+        help={`How deep the tool pocket is cut into the bin. Range ${MIN_CUTOUT_DEPTH.toFixed(1)}–${maxCutoutDepth.toFixed(1)}mm at ${config.height_units}u height${config.stacking_lip && !config.shelled ? ' (with stacking lip)' : ''}${config.flat_bottom ? ` (flat bottom keeps ${MIN_FLAT_FLOOR_DEPTH.toFixed(1)}mm of floor)` : ''}.`}
         value={Math.min(config.cutout_depth, maxCutoutDepth)}
         min={MIN_CUTOUT_DEPTH}
         max={maxCutoutDepth}
@@ -298,30 +451,59 @@ export function BinConfigurator({ config, onChange, autoSize, onAutoSizeChange }
         unit="mm"
         onChange={(v) => update({ cutout_chamfer: v })}
       />
+      </ConfigSection>
 
-      <div className="border-t border-border mt-2 pt-1">
+      <ConfigSection
+        id="base"
+        title="Base"
+        collapsed={collapsedSections.base}
+        onToggle={() => toggleSection('base')}
+      >
         <Toggle
-          checked={config.half_grid_base}
-          onChange={(v) => update({ half_grid_base: v, ...(v ? { magnets: false } : {}) })}
-          label="Half-grid base"
-          help="Use 21mm half-grid cells on the baseplate instead of standard 42mm. Gives finer positioning on the baseplate."
+          checked={config.flat_bottom}
+          onChange={(v) => {
+            const newMax = calcMaxCutoutDepth(config.height_units, config.stacking_lip, config.shelled, v)
+            // the 4.75mm the feet occupied becomes usable interior depth, so
+            // re-express the shell floor against the new base height
+            const depth = Math.min(Math.max(plateToShellDepth(config.shell_floor_plate, config.height_units, v), MIN_CUTOUT_DEPTH), newMax)
+            update({
+              flat_bottom: v,
+              ...(v ? { magnets: false } : {}),
+              cutout_depth: Math.min(config.cutout_depth, newMax),
+              shell_floor_plate: shellDepthToPlate(depth, config.height_units, v),
+            })
+          }}
+          label="Flat Bottom"
+          help="Replaces the gridfinity feet with a flat underside, chamfered 0.7mm at 45° along the bottom edge, so the bin rests directly on a surface instead of a baseplate. The grid width and depth are unchanged, so it still occupies the same cells. The 4.75mm the feet used is repurposed for deeper tool cutouts and shell interiors, while at least 2mm of solid floor is kept. Magnet holes are not available without feet."
         />
+        {config.flat_bottom && (
+          <p className="text-[11px] text-text-muted mt-0.5 leading-tight pl-0.5">
+            No feet, so this bin cannot be attached to a Gridfinity baseplate
+          </p>
+        )}
         <Toggle
-          checked={config.magnets && !config.half_grid_base}
+          checked={config.magnets && !config.half_grid_base && !config.flat_bottom}
           onChange={(v) => update({ magnets: v })}
           label="Magnet holes"
           help="Holes in the base for magnets. Keeps bins locked to the baseplate."
-          disabled={config.half_grid_base}
+          disabled={config.half_grid_base || config.flat_bottom}
         />
-        {config.half_grid_base && (
+        {config.half_grid_base && !config.flat_bottom && (
           <p className="text-[11px] text-text-muted mt-0.5 leading-tight pl-0.5">
             Magnet holes are not compatible with half-grid base cells
           </p>
         )}
-        {config.magnets && !config.half_grid_base && (
-          <div className="pl-3 border-l border-border-subtle ml-1 space-y-0">
+        {config.magnets && !config.half_grid_base && !config.flat_bottom && (
+          <SubGroup
+            summary={
+              config.magnet_corners_only
+                ? `${config.magnet_diameter}mm · ${config.magnet_depth}mm deep · corners only`
+                : `${config.magnet_diameter}mm · ${config.magnet_depth}mm deep`
+            }
+          >
             <SliderRow
               label="Diameter"
+              help="Magnet diameter in mm. Must match the magnets seated in your baseplate."
               value={config.magnet_diameter}
               min={3}
               max={10}
@@ -331,6 +513,7 @@ export function BinConfigurator({ config, onChange, autoSize, onAutoSizeChange }
             />
             <SliderRow
               label="Depth"
+              help="How deep the hole is drilled, in mm. Deep enough to seat a magnet flush with the base surface."
               value={config.magnet_depth}
               min={1}
               max={5}
@@ -344,12 +527,25 @@ export function BinConfigurator({ config, onChange, autoSize, onAutoSizeChange }
               label="Corners only"
               help="Only place magnet holes at the 4 outer corners of the bin."
             />
-          </div>
+          </SubGroup>
         )}
+      </ConfigSection>
+
+      <ConfigSection
+        id="features"
+        title="Features"
+        collapsed={collapsedSections.features}
+        onToggle={() => toggleSection('features')}
+        summary={[
+          config.stacking_lip ? (config.rim_units > 0 ? `lip +${config.rim_units}u` : 'lip on') : null,
+          config.shelled ? 'shell on' : null,
+          config.insert_enabled ? 'insert on' : null,
+        ].filter(Boolean).join(' · ') || 'none enabled'}
+      >
         <Toggle
           checked={config.stacking_lip}
           onChange={(v) => {
-            const newMax = calcMaxCutoutDepth(config.height_units, v, config.shelled)
+            const newMax = calcMaxCutoutDepth(config.height_units, v, config.shelled, config.flat_bottom)
             update({
               stacking_lip: v,
               rim_units: v ? config.rim_units : 0,
@@ -362,7 +558,7 @@ export function BinConfigurator({ config, onChange, autoSize, onAutoSizeChange }
           help="Raised rim at the top so bins can stack securely on top of each other."
         />
         {config.stacking_lip && (
-          <div className="pl-3 border-l border-border-subtle ml-1 space-y-0">
+          <SubGroup summary={config.rim_units > 0 ? `raised ${config.rim_units}u` : 'standard height'}>
             <SliderRow
               label="Raise Lip"
               help="Extends the wall and lip this many units (7mm each) above the floor face, leaving the interior open. Lets a tool protrude above the floor while a stacked bin still clears it. 0 = standard."
@@ -372,24 +568,26 @@ export function BinConfigurator({ config, onChange, autoSize, onAutoSizeChange }
               unit="u"
               onChange={(v) => update({ rim_units: v })}
             />
-          </div>
+          </SubGroup>
         )}
         <Toggle
           checked={config.shelled}
           onChange={(v) => {
-            const maxDepth = calcMaxCutoutDepth(config.height_units, config.stacking_lip, true)
-            const depth = Math.min(Math.max(plateToShellDepth(config.shell_floor_plate, config.height_units), MIN_CUTOUT_DEPTH), maxDepth)
+            const maxDepth = calcMaxCutoutDepth(config.height_units, config.stacking_lip, true, config.flat_bottom)
+            const depth = Math.min(Math.max(plateToShellDepth(config.shell_floor_plate, config.height_units, config.flat_bottom), MIN_CUTOUT_DEPTH), maxDepth)
             update({
               shelled: v,
               wall_thickness: v ? Math.min(3, Math.max(1, config.wall_thickness)) : 1.6,
-              shell_floor_plate: v ? shellDepthToPlate(depth, config.height_units) : 0.75,
+              shell_floor_plate: v ? shellDepthToPlate(depth, config.height_units, config.flat_bottom) : 0.75,
             })
           }}
           label="Shell"
           help="Builds the bin as a constant-thickness shell: walls around the tools and around the outside, with the top surface open between them. Saves filament and print time. With the standard base a thin floor above the feet seals the bottom."
         />
         {config.shelled && (
-          <div className="pl-3 border-l border-border-subtle ml-1 space-y-0">
+          <SubGroup
+            summary={`${config.wall_thickness}mm walls · ${Math.min(Math.max(shellDepth, shellDepthMin), shellDepthMax).toFixed(1)}mm deep`}
+          >
             <SliderRow
               label="Wall Thickness"
               help="Thickness of the shell walls."
@@ -409,7 +607,7 @@ export function BinConfigurator({ config, onChange, autoSize, onAutoSizeChange }
               step={SHELL_DEPTH_STEP}
               unit="mm"
               onChange={(v) => {
-                const plate = Math.max(shellDepthToPlate(v, config.height_units), MIN_FLOOR_PLATE)
+                const plate = Math.max(shellDepthToPlate(v, config.height_units, config.flat_bottom), MIN_FLOOR_PLATE)
                 update({ shell_floor_plate: plate })
               }}
             />
@@ -428,7 +626,7 @@ export function BinConfigurator({ config, onChange, autoSize, onAutoSizeChange }
                 help="Keeps the standard stacking-lip profile at the top so bins stack with any gridfinity bin. Off runs the shell thickness all the way up through the lip (minimum filament, non-standard stacking)."
               />
             )}
-          </div>
+          </SubGroup>
         )}
         <Toggle
           checked={config.insert_enabled}
@@ -437,7 +635,7 @@ export function BinConfigurator({ config, onChange, autoSize, onAutoSizeChange }
           help="Generates a separate insert STL to print in a contrasting colour. The pocket is deepened to accommodate it."
         />
         {config.insert_enabled && (
-          <>
+          <SubGroup summary={`${config.insert_height}mm thick · ${config.insert_clearance}mm fit`}>
             <SliderRow
               label="Insert Height"
               help="Thickness of the insert in mm."
@@ -458,32 +656,16 @@ export function BinConfigurator({ config, onChange, autoSize, onAutoSizeChange }
               unit="mm"
               onChange={(v) => update({ insert_clearance: v })}
             />
-          </>
+          </SubGroup>
         )}
-      </div>
+      </ConfigSection>
 
-      <div className="border-t border-border mt-2 pt-1">
-        <SliderRow
-          label="Bed Size"
-          help="Print bed size. Bins wider than this are automatically split into pieces."
-          value={config.bed_size}
-          min={BED_SIZE_MIN_MM}
-          max={BED_SIZE_MAX_MM}
-          step={1}
-          unit="mm"
-          onChange={(v) => update({ bed_size: v })}
-        />
-        {needsSplit && (
-          <HintBanner>
-            {binWidth > config.bed_size && `Width ${binWidth}mm exceeds bed`}
-            {binWidth > config.bed_size && binDepth > config.bed_size && ' & '}
-            {binDepth > config.bed_size && `Depth ${binDepth}mm exceeds bed`}
-            {' \u2014 will be split'}
-          </HintBanner>
-        )}
-      </div>
-
-      <div className="border-t border-border mt-2 pt-1">
+      <ConfigSection
+        id="partial"
+        title="Partial bins"
+        collapsed={collapsedSections.partial}
+        onToggle={() => toggleSection('partial')}
+      >
           <Toggle
               checked={config.partial_bins}
               onChange={(v) =>
@@ -496,7 +678,11 @@ export function BinConfigurator({ config, onChange, autoSize, onAutoSizeChange }
               help="Print only parts of the bin that are needed to hold the tools."
           />
           {config.partial_bins && (
-              <div className="pl-3 border-l border-border-subtle ml-1 space-y-0">
+              <SubGroup summary={
+                config.partial_bins_values.filter(Boolean).length === config.partial_bins_values.length
+                  ? 'all cells'
+                  : `${config.partial_bins_values.filter(Boolean).length} of ${config.partial_bins_values.length} cells${config.partial_bins_connect ? ' · connected' : ''}`
+              }>
                   <RadioMatrix sizeX={Math.ceil(config.grid_x)} sizeY={Math.ceil(config.grid_y)} values={config.partial_bins_values} onChange={(v) => update({ partial_bins_values: v })} />
                   <Toggle
                       checked={config.partial_bins_connect}
@@ -518,9 +704,36 @@ export function BinConfigurator({ config, onChange, autoSize, onAutoSizeChange }
                       />
                   )}
                   {exportsSeparateParts && <HintBanner>Disconnected pieces {"\u2014"} export includes a ZIP with one STL per part</HintBanner>}
-              </div>
+              </SubGroup>
           )}
-      </div>
+      </ConfigSection>
+
+      <ConfigSection
+        id="print"
+        title="Print"
+        collapsed={collapsedSections.print}
+        onToggle={() => toggleSection('print')}
+        summary={`${config.bed_size}mm bed`}
+      >
+        <SliderRow
+          label="Bed Size"
+          help="Print bed size. Bins wider than this are automatically split into pieces."
+          value={config.bed_size}
+          min={BED_SIZE_MIN_MM}
+          max={BED_SIZE_MAX_MM}
+          step={1}
+          unit="mm"
+          onChange={(v) => update({ bed_size: v })}
+        />
+        {needsSplit && (
+          <HintBanner>
+            {binWidth > config.bed_size && `Width ${binWidth}mm exceeds bed`}
+            {binWidth > config.bed_size && binDepth > config.bed_size && ' & '}
+            {binDepth > config.bed_size && `Depth ${binDepth}mm exceeds bed`}
+            {' \u2014 will be split'}
+          </HintBanner>
+        )}
+      </ConfigSection>
     </div>
   )
 }

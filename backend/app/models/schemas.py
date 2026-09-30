@@ -153,6 +153,7 @@ class BinParams(BaseModel):
     insert_clearance: float = 0.2  # mm shaved off the insert so it fits the pocket
     cutout_chamfer: float = 0.0
     half_grid_base: bool = False  # use 21mm half-grid cells for the bottom baseplate
+    flat_bottom: bool = False  # replace the gridfinity feet with a flat underside
     partial_bins: bool = False
     partial_bins_values: list[bool] = []
     partial_bins_connect: bool = False
@@ -264,6 +265,16 @@ class BinParams(BaseModel):
     @model_validator(mode="after")
     def half_grid_disables_magnets(self) -> "BinParams":
         if self.half_grid_base:
+            self.magnets = False
+        return self
+
+    @model_validator(mode="after")
+    def flat_bottom_disables_magnets(self) -> "BinParams":
+        # A flat-bottomed bin has no gridfinity feet, so magnet holes have
+        # nothing to seat into. half_grid_base is left alone: it describes
+        # the grid footprint (cell pitch for layout and snapping), not just
+        # the feet, and stays meaningful on a flat bottom.
+        if self.flat_bottom:
             self.magnets = False
         return self
 

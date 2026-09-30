@@ -2177,6 +2177,7 @@ def generate_bin_stl(request: Request, bin_id: str, user_id: str = Depends(get_u
         insert_height=bc.insert_height,
         insert_clearance=bc.insert_clearance,
         cutout_chamfer=bc.cutout_chamfer,
+        flat_bottom=bc.flat_bottom,
         partial_bins=bc.partial_bins,
         partial_bins_values=bc.partial_bins_values,
         partial_bins_connect=bc.partial_bins_connect,

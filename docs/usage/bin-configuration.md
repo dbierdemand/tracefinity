@@ -8,8 +8,8 @@ Gridfinity is a modular storage system where bins snap into a baseplate grid. Ea
 |-|-|-|-|
 | Grid width | 1-25 u | 2 | Each unit is 42mm; the grid footprint is limited to 100 cells |
 | Grid depth | 1-25 u | 2 | The available maximum adjusts with the width |
-| Height | 1-20 u | 4 | Each unit is 7mm + 4.75mm base |
-| Cutout depth | 1.5mm-max | 20mm | Min 1.5mm; the max grows 7mm per extra height unit (reduced by the stacking lip on solid bins) |
+| Height | 1-20 u | 4 | Each unit is 7mm, plus a 4.75mm base (a flat-bottomed bin has no base, so the full unit height is usable) |
+| Cutout depth | 1.5mm-max | 20mm | Min 1.5mm; the max grows 7mm per extra height unit (reduced by the stacking lip on solid bins). With a flat bottom the max is the full wall height less a 2mm floor |
 | Clearance | 0-5mm | 1.0mm | Gap around tool outlines |
 | Cutout chamfer | 0-3mm | 0mm | Bevel on top edge of pockets |
 | Magnet diameter | 3-10mm | 6mm | Standard Gridfinity magnets are 6x2mm |
@@ -19,6 +19,8 @@ Gridfinity is a modular storage system where bins snap into a baseplate grid. Ea
 | Bed size | 150-500mm | 256mm | For auto-splitting oversized bins |
 
 ## Toggles
+
+**Flat Bottom** -- replaces the gridfinity feet with a flat underside, so the bin rests directly on a surface rather than snapping into a baseplate. The grid width and depth are unchanged, so the bin still occupies exactly the cells it claims; only the underside is different. The bottom edge is chamfered 0.7mm at 45°, which keeps the first layers from starting as a full-footprint raft and eases the part off a surface. The 4.75mm the feet would have occupied becomes usable interior depth, so the **Cutout Depth** and **Shell Depth** maximums increase while at least a 2mm solid floor is kept beneath the pockets. Because a flat bottom has no feet, it has no baseplate interface, so **magnet holes** are disabled while it is on and the bin cannot be attached to a Gridfinity baseplate. **Half-grid base** still applies -- it controls grid layout and snapping, not the feet.
 
 **Magnet holes** -- recesses in the bin base for magnets. On by default.
 
@@ -39,7 +41,7 @@ Gridfinity is a modular storage system where bins snap into a baseplate grid. Ea
 **Shell** -- rebuilds the bin as a constant-thickness shell: walls trace the outside of the bin and the outside of each tool outline, and the top surface between them is open. Saves filament and print time. With the standard base a floor plate above the feet (default 0.75mm) seals the bottom. Unlike solid bins, the stacking lip does **not** reduce shell-mode pocket depth — the lip collar is perimeter-only and never bounds the pockets. When on, these settings appear:
 
 - **Wall Thickness** -- direct slider from 1-3mm in 0.2mm steps.
-- **Shell Depth** -- how deep the open shell interior extends below the wall top; the remaining height seals as a floor plate. Snaps in 0.5mm increments and uses the same range rule as Cutout Depth: 1.5mm minimum, max = 1.5 + 7 × (height − 1) at the selected bin height. Higher depth = thinner floor plate = less filament.
+- **Shell Depth** -- how deep the open shell interior extends below the wall top; the remaining height seals as a floor plate. Snaps in 0.5mm increments and uses the same range rule as Cutout Depth: 1.5mm minimum, max = 1.5 + 7 × (height − 1) at the selected bin height (or the full wall height less 2mm on a flat bottom). Higher depth = thinner floor plate = less filament.
 
 Two sub-options control the shell shape:
 
